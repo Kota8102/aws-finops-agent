@@ -174,10 +174,18 @@ export interface CostAnomalyEvidenceItem {
   }>;
 }
 
+export interface AnomalyActionabilityCriteria {
+  activeWithinDays: number;
+  minImpactUsd: number;
+}
+
 export interface CostAnomalyEvidence {
   lookbackDays: number;
   anomalies: CostAnomalyEvidenceItem[];
   totalImpact: number;
+  actionableAnomalyCount: number;
+  actionableTotalImpact: number;
+  actionableCriteria: AnomalyActionabilityCriteria;
 }
 
 export interface FinOpsEvidence {
@@ -740,6 +748,16 @@ export async function collectTrustedAdvisorEvidence(): Promise<TrustedAdvisorEvi
   };
 }
 
+export function isActionableAnomaly(
+  anomaly: Pick<CostAnomalyEvidenceItem, "endDate" | "totalImpact">,
+  today: string,
+  criteria: AnomalyActionabilityCriteria,
+): boolean {
+  const stillActive =
+    !anomaly.endDate || anomaly.endDate >= addDays(today, -criteria.activeWithinDays);
+  return stillActive && anomaly.totalImpact >= criteria.minImpactUsd;
+}
+
 export async function collectCostAnomalyEvidence(now = new Date()): Promise<CostAnomalyEvidence> {
   const lookbackDays = Number(process.env.ANOMALY_LOOKBACK_DAYS ?? 30);
   const today = dateInTimezone(now, process.env.REPORT_TIMEZONE ?? "Asia/Tokyo");
@@ -780,10 +798,20 @@ export async function collectCostAnomalyEvidence(now = new Date()): Promise<Cost
   } while (nextPageToken && anomalies.length < 200);
 
   anomalies.sort((a, b) => b.totalImpact - a.totalImpact);
+  const actionableCriteria: AnomalyActionabilityCriteria = {
+    activeWithinDays: Number(process.env.ANOMALY_ACTIVE_WITHIN_DAYS ?? 7),
+    minImpactUsd: Number(process.env.ANOMALY_MIN_IMPACT_USD ?? 10),
+  };
+  const actionable = anomalies.filter((item) =>
+    isActionableAnomaly(item, today, actionableCriteria),
+  );
   return {
     lookbackDays,
     anomalies: anomalies.slice(0, 50),
     totalImpact: anomalies.reduce((sum, item) => sum + item.totalImpact, 0),
+    actionableAnomalyCount: actionable.length,
+    actionableTotalImpact: actionable.reduce((sum, item) => sum + item.totalImpact, 0),
+    actionableCriteria,
   };
 }
 
@@ -854,7 +882,14 @@ export async function collectFinOpsEvidence(now = new Date()): Promise<FinOpsEvi
       safeCollect(
         "Cost Anomaly Detection",
         "global",
-        { lookbackDays: 30, anomalies: [], totalImpact: 0 },
+        {
+          lookbackDays: 30,
+          anomalies: [],
+          totalImpact: 0,
+          actionableAnomalyCount: 0,
+          actionableTotalImpact: 0,
+          actionableCriteria: { activeWithinDays: 7, minImpactUsd: 10 },
+        },
         () => collectCostAnomalyEvidence(now),
         now,
       ),

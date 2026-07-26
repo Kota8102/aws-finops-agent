@@ -86,6 +86,8 @@ export class FinOpsFeedbackStack extends cdk.Stack {
         COST_METRIC: props.costMetric,
         EVIDENCE_LOOKBACK_DAYS: "14",
         ANOMALY_LOOKBACK_DAYS: "30",
+        ANOMALY_ACTIVE_WITHIN_DAYS: "7",
+        ANOMALY_MIN_IMPACT_USD: "10",
         EC2_LOW_CPU_THRESHOLD: "10",
         RDS_LOW_CPU_THRESHOLD: "20",
       },

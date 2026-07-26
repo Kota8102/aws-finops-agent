@@ -50,6 +50,11 @@ export interface DailyCostRow {
   amount: number;
 }
 
+export interface DailyTotal {
+  date: string;
+  amount: number;
+}
+
 export interface ServiceCostSummary {
   service: string;
   recentCost: number;
@@ -73,6 +78,7 @@ export interface CostReport {
   monthToDateProjection: number | null;
   costExplorerForecast: number | null;
   serviceSummaries: ServiceCostSummary[];
+  dailyTotals: DailyTotal[];
   dataNote: string;
 }
 
@@ -226,6 +232,21 @@ export function summarizeServiceCosts(
     .sort((a, b) => Math.abs(b.changeAmount) - Math.abs(a.changeAmount));
 }
 
+export function summarizeDailyTotals(
+  rows: DailyCostRow[],
+  start: string,
+  endExclusive: string,
+): DailyTotal[] {
+  const totals = new Map<string, number>();
+  for (const row of rows) {
+    if (!isInPeriod(row.date, start, endExclusive)) continue;
+    totals.set(row.date, (totals.get(row.date) ?? 0) + row.amount);
+  }
+  return [...totals.entries()]
+    .map(([date, amount]) => ({ date, amount }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
 function totalForPeriod(rows: DailyCostRow[], start: string, endExclusive: string): number {
   return rows
     .filter((row) => isInPeriod(row.date, start, endExclusive))
@@ -355,6 +376,7 @@ export async function buildCostReport(now = new Date()): Promise<CostReport> {
         : (monthToDateTotal / elapsedDays) * daysInMonth(windows.monthStart),
     costExplorerForecast,
     serviceSummaries: summarizeServiceCosts(rows, windows).slice(0, 20),
+    dailyTotals: summarizeDailyTotals(rows, windows.previousStart, windows.todayExclusive),
     dataNote:
       "Cost Explorerの最新データには遅延や未確定の調整が含まれる場合があります。Cost Explorer予測を取得できない場合は単純な線形見込みを表示します。金額はAWS請求アカウントのUSDです。",
   };
@@ -527,6 +549,7 @@ export async function generateAiFeedback(
 - 削減候補の合計はCost Optimization Hubの重複除外済み金額を優先し、Compute OptimizerとTrusted Advisorの金額を単純合算しない。
 - 有効なコスト配分タグは、取得できた場合だけ文脈として使い、タグがないことを異常と断定しない。
 - 増減の事実と原因の仮説を分ける。原因が不明なら「要確認」と書く。
+- costReport.dailyTotalsは比較2期間の日別合計コストである。増減の開始日や急変日が読み取れる場合は、summaryまたはhighlightsでその日付に言及する。
 - 削減策は、低リスクな確認から順に、P0（今すぐ確認）、P1（今週）、P2（計画）で提示する。
 - 停止・削除・購入など不可逆またはコミットメントを伴う操作は、必ず検証手順とリスクを書く。
 - CloudWatchの低CPUシグナルだけで停止や縮小を断定しない。ピーク、メモリ、可用性、所有者を検証する。
@@ -612,6 +635,14 @@ function evidenceStats(evidence: FinOpsEvidence) {
   };
 }
 
+function formatAnomalyDetail(evidence: FinOpsEvidence): string {
+  const anomalies = evidence.costAnomalies.data;
+  if (anomalies.actionableAnomalyCount > 0) {
+    return `${anomalies.actionableAnomalyCount}件 ${formatMoney(anomalies.actionableTotalImpact)}`;
+  }
+  return anomalies.anomalies.length > 0 ? `0（過去${anomalies.anomalies.length}）` : "0件";
+}
+
 function formatCompactEvidence(evidence: FinOpsEvidence): string {
   const stats = evidenceStats(evidence);
   return [
@@ -621,9 +652,12 @@ function formatCompactEvidence(evidence: FinOpsEvidence): string {
     `Budget ${collectorStatusMark(evidence.budgets.status)} 超過${evidence.budgets.data.overBudgetCount}`,
     `Hub ${collectorStatusMark(evidence.costOptimizationHub.status)} ${evidence.costOptimizationHub.data.recommendations.length}件`,
     `Tag ${collectorStatusMark(evidence.costAllocationTags.status)} ${evidence.costAllocationTags.data.totalActiveTags}`,
-    `異常 ${collectorStatusMark(evidence.costAnomalies.status)} ${evidence.costAnomalies.data.anomalies.length}件`,
+    `異常 ${collectorStatusMark(evidence.costAnomalies.status)} ${formatAnomalyDetail(evidence)}`,
   ].join("  ｜  ");
 }
+
+const evidenceLegend =
+  "凡例: CW=CloudWatch低CPU / CO=Compute Optimizer / TA=Trusted Advisor / Hub=Cost Optimization Hub / 異常=対応が必要なCost Anomalyの件数と影響額 / 割引前・割引後=削減見積への割引適用";
 
 function topBudget(evidence: FinOpsEvidence | undefined) {
   return evidence?.budgets.data.budgets[0];
@@ -642,8 +676,8 @@ function formatBudgetSummary(evidence: FinOpsEvidence | undefined): string {
 }
 
 function savingsEstimationModeLabel(mode: string | undefined): string {
-  if (mode === "AfterDiscounts") return "控除後";
-  if (mode === "BeforeDiscounts") return "控除前";
+  if (mode === "AfterDiscounts") return "割引後";
+  if (mode === "BeforeDiscounts") return "割引前";
   return "参考";
 }
 
@@ -651,11 +685,12 @@ function slackLink(url: string, label: string): string {
   return `<${url}|${label}>`;
 }
 
+const deployedRegion = process.env.AWS_REGION ?? "ap-northeast-1";
 const consoleLinks = {
   costExplorer: "https://console.aws.amazon.com/cost-management/home?region=us-east-1#/cost-explorer",
   budgets: "https://console.aws.amazon.com/billing/home?region=us-east-1#/budgets/overview",
   costOptimizationHub: "https://console.aws.amazon.com/cost-management/home?region=us-east-1#/cost-optimization-hub",
-  computeOptimizer: "https://console.aws.amazon.com/compute-optimizer/home?region=ap-northeast-1#dashboard",
+  computeOptimizer: `https://console.aws.amazon.com/compute-optimizer/home?region=${encodeURIComponent(deployedRegion)}#dashboard`,
   trustedAdvisor: "https://console.aws.amazon.com/trustedadvisor/home?region=us-east-1",
   costAllocationTags: "https://console.aws.amazon.com/billing/home?region=us-east-1#/tags",
   costAnomalies: "https://console.aws.amazon.com/cost-management/home?region=us-east-1#/anomaly-detection",
@@ -716,6 +751,40 @@ function formatInvestigationLinks(evidence: FinOpsEvidence | undefined): string 
   return links.join(" ・ ");
 }
 
+const confidenceLabels: Record<string, string> = { high: "高", medium: "中", low: "低" };
+
+function formatFindingsSection(
+  feedback: AiFeedback,
+  investigation: FinOpsInvestigation | undefined,
+): { title: string; body: string } | undefined {
+  const conclusionFindings = (investigation?.conclusion?.findings ?? []).filter(
+    (item) => item.assessment,
+  );
+  if (conclusionFindings.length > 0) {
+    return {
+      title: "原因の仮説（調査Agent）",
+      body: conclusionFindings
+        .slice(0, 2)
+        .map(
+          (item) =>
+            `• *${shortServiceName(item.service)}*: ${truncate(item.assessment, 140)}（確信度: ${confidenceLabels[item.confidence] ?? item.confidence}）`,
+        )
+        .join("\n"),
+    };
+  }
+  const highlights = feedback.highlights.filter((item) => item.finding).slice(0, 2);
+  if (highlights.length === 0) return undefined;
+  return {
+    title: "観察",
+    body: highlights
+      .map(
+        (item) =>
+          `• *${shortServiceName(item.service)}*: ${truncate(item.finding, 120)}${item.evidence ? `（${truncate(item.evidence, 80)}）` : ""}`,
+      )
+      .join("\n"),
+  };
+}
+
 function formatInvestigationSummary(investigation: FinOpsInvestigation | undefined): string | undefined {
   if (!investigation) return undefined;
   if (investigation.status === "not-triggered") return "調査: 対象なし";
@@ -748,7 +817,7 @@ function finOpsStatus(
     feedback.savingsActions.some((item) => item.priority === "P0") ||
     (evidence?.budgets.data.overBudgetCount ?? 0) > 0 ||
     (evidence?.budgets.data.forecastOverBudgetCount ?? 0) > 0 ||
-    (evidence?.costAnomalies.data.anomalies.length ?? 0) > 0
+    (evidence?.costAnomalies.data.actionableAnomalyCount ?? 0) > 0
   ) {
     return "🔴 要対応";
   }
@@ -773,6 +842,12 @@ function finOpsStatus(
   return "🟢 正常";
 }
 
+function trendArrow(amount: number): string {
+  if (amount > 0) return "↑";
+  if (amount < 0) return "↓";
+  return "→";
+}
+
 export function formatSlackMessage(
   report: CostReport,
   feedback: AiFeedback,
@@ -784,14 +859,12 @@ export function formatSlackMessage(
     .filter((item) => item.service !== "Tax" && Math.abs(item.changeAmount) >= 0.01)
     .slice(0, 3)
     .map(
-      (item) => {
-        const arrow = item.changeAmount > 0 ? "↑" : "↓";
-        return `${arrow} *${shortServiceName(item.service)}*  ${formatMoney(item.recentCost)} (${formatPercent(item.changePercent)})`;
-      },
+      (item) =>
+        `${trendArrow(item.changeAmount)} *${shortServiceName(item.service)}*  ${formatMoney(item.recentCost)} (${formatPercent(item.changePercent)})`,
     )
     .join("   ");
   const actions = feedback.savingsActions
-    .slice(0, 2)
+    .slice(0, 3)
     .map(
       (item, index) =>
         `${["①", "②", "③"][index]} *${item.priority}* ${truncate(item.action, 180)}`,
@@ -801,15 +874,23 @@ export function formatSlackMessage(
   const title = `AWS FinOps｜${report.recentPeriod.endExclusive}｜${status}`;
   const stats = evidence ? evidenceStats(evidence) : undefined;
   const savingsReference = stats
-    ? `COH ${formatMoney(stats.costOptimizationHubSavings)} (${savingsEstimationModeLabel(evidence?.costOptimizationHub.data.savingsEstimationMode)})`
+    ? `Hub ${formatMoney(stats.costOptimizationHubSavings)} (${savingsEstimationModeLabel(evidence?.costOptimizationHub.data.savingsEstimationMode)})`
     : "データなし";
   const forecast = report.costExplorerForecast ?? report.monthToDateProjection;
   const forecastLabel = report.costExplorerForecast === null ? "月末見込（線形）" : "CE月末見込";
-  const changeArrow = report.changeAmount > 0 ? "↑" : "↓";
+  const changeArrow = trendArrow(report.changeAmount);
   const budgetSummary = formatBudgetSummary(evidence);
+  const findingsSection = formatFindingsSection(feedback, investigation);
+  const watchout = aiError
+    ? undefined
+    : feedback.watchouts.find((item) => item && item.trim().length > 0);
+  const summaryBody = [
+    truncate(feedback.summary, 380),
+    watchout ? `⚠ ${truncate(watchout, 160)}` : undefined,
+  ].filter(Boolean).join("\n");
   const plainText = truncate([
     title,
-    `7日コスト ${formatMoney(report.recentTotal)} / 前週比 ${changeArrow}${formatMoney(Math.abs(report.changeAmount))} (${formatPercent(report.changePercent)})`,
+    `7日コスト ${formatMoney(report.recentTotal)} / 前7日比 ${changeArrow}${formatMoney(Math.abs(report.changeAmount))} (${formatPercent(report.changePercent)})`,
     `Budget ${budgetSummary}`,
     `要点: ${truncate(feedback.summary, 360)}`,
     actions ? `今やること:\n${actions}` : "今やること: なし",
@@ -821,18 +902,29 @@ export function formatSlackMessage(
       type: "section",
       fields: [
         { type: "mrkdwn", text: `*7日コスト*\n${formatMoney(report.recentTotal)}` },
-        { type: "mrkdwn", text: `*前週比*\n${changeArrow} ${formatMoney(Math.abs(report.changeAmount))} (${formatPercent(report.changePercent)})` },
+        { type: "mrkdwn", text: `*前7日比*\n${changeArrow} ${formatMoney(Math.abs(report.changeAmount))} (${formatPercent(report.changePercent)})` },
         { type: "mrkdwn", text: `*当月累計*\n${formatMoney(report.monthToDateTotal)}` },
         { type: "mrkdwn", text: `*${forecastLabel}*\n${forecast === null ? "–" : formatMoney(forecast)}` },
         { type: "mrkdwn", text: `*Budget*\n${budgetSummary}` },
         { type: "mrkdwn", text: `*削減候補/月（重複除外）*\n${savingsReference}` },
       ],
     },
-    { type: "section", text: { type: "mrkdwn", text: `*要点*\n${truncate(feedback.summary, 380)}` } },
-    { type: "divider" },
+    { type: "section", text: { type: "mrkdwn", text: `*要点*\n${summaryBody}` } },
   ];
+  if (findingsSection) {
+    blocks.push({
+      type: "section",
+      text: { type: "mrkdwn", text: `*${findingsSection.title}*\n${findingsSection.body}` },
+    });
+  }
   if (actions) {
-    blocks.push({ type: "section", text: { type: "mrkdwn", text: `*今やること*\n${actions}` } });
+    blocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*今やること*\n${actions}\n_P0=今すぐ / P1=今週 / P2=計画_`,
+      },
+    });
   }
   if (topChanges) {
     blocks.push({ type: "section", text: { type: "mrkdwn", text: `*変化が大きいサービス*\n${topChanges}` } });
@@ -844,10 +936,13 @@ export function formatSlackMessage(
     evidence ? `詳細: ${formatInvestigationLinks(evidence)}` : undefined,
     aiError ? `AI分析はフォールバックです: ${truncate(aiError, 240)}` : undefined,
   ].filter(Boolean);
-  blocks.push({
-    type: "context",
-    elements: [{ type: "mrkdwn", text: contextParts.join("  ｜  ") }],
-  });
+  const contextElements: Array<Record<string, unknown>> = [
+    { type: "mrkdwn", text: contextParts.join("  ｜  ") },
+  ];
+  if (evidence) {
+    contextElements.push({ type: "mrkdwn", text: evidenceLegend });
+  }
+  blocks.push({ type: "context", elements: contextElements });
   return { text: plainText, blocks };
 }
 

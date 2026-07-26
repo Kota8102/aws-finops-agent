@@ -1,5 +1,7 @@
 # アーキテクチャ
 
+## 全体像
+
 ```mermaid
 flowchart LR
   S["EventBridge Scheduler<br/>毎日 09:00 JST"] --> L["AWS Lambda<br/>Node.js / TypeScript"]
@@ -22,49 +24,114 @@ flowchart LR
   BU --> SNS["SNS Topic"] --> BA["Budget Alert Lambda"] --> SL
 ```
 
+Slackへ通知が届く経路は2つあります。
+
+1. **日次レポート（スケジュール実行）** — EventBridge Scheduler → 日次レポートLambda → Slack
+2. **Budget即時通知（イベント駆動）** — AWS Budgets → SNS → Budget Alert Lambda → Slack（[`FinOpsBudgetAlertStack`](./setup.md#9-budgetしきい値をslackへ即時通知) をデプロイした場合のみ）
+
+## 日次レポートの処理の流れ
+
+```text
+1. 集計期間を決定        直近7日と、その前の7日（当日は未確定のため除外）
+2. コストを取得          Cost Explorer でサービス別・日別に集計し、前の7日と比較
+3. 証拠を並列収集        Budgets / Hub / CloudWatch / Compute Optimizer
+                        / Trusted Advisor / Anomaly Detection / タグ
+                        → 個別に成否を記録（ok / unavailable / error）
+4. 増加を検知            前7日比 +$100以上 かつ +20%以上 のサービスを抽出
+5. 追加調査（条件付き）   該当サービスがあれば調査Lambdaを同期呼び出し
+6. AIで要約              Bedrock Converse API の構造化出力で
+                        要点・観察・P0/P1/P2アクション・注意点を生成
+7. Slackへ投稿           Block Kit で最大7ブロックに整形
+                        （調査の結論は「原因の仮説」として確信度付きで表示）
+```
+
+手順3のいずれかが失敗しても、手順6・7は取得できた情報だけで続行します。手順6が失敗した場合も、数値ベースのフォールバック通知（`aiFallback: true`）へ切り替わります。**Agentが黙って何も通知しない状態を作らない**ことを優先した設計です。
+
 ## データソース
 
-| データソース | 対象 | リージョン |
+| データソース | 取得内容 | 呼び出しリージョン |
 | --- | --- | --- |
-| Cost Explorer | 請求アカウント全体、サービス別の日次コスト | `us-east-1` API |
-| AWS Budgets | COST budgetの実績・予測・上限超過 | `us-east-1` API |
-| Cost Optimization Hub | 重複を除外した最適化候補と月額削減見込み | `us-east-1` API |
-| Cost allocation tags | 有効なタグキーのみ | `us-east-1` API |
-| CloudWatch | EC2/RDSのCPU利用率 | デプロイ先リージョン |
-| Compute Optimizer | EC2/EBS/Lambda/RDS/アイドル推薦 | デプロイ先リージョン |
+| Cost Explorer | 請求アカウント全体、サービス別の日次コスト、月末予測 | `us-east-1` |
+| AWS Budgets | COST budgetの実績・予測・上限超過 | `us-east-1` |
+| Cost Optimization Hub | 重複を除外した最適化候補と月額削減見込み | `us-east-1` |
+| Cost allocation tags | 有効なタグキーの一覧のみ | `us-east-1` |
+| CloudWatch | EC2 / RDSのCPU利用率 | デプロイ先リージョン |
+| Compute Optimizer | EC2 / EBS / Lambda / RDS / アイドルリソースの推薦 | デプロイ先リージョン |
 | Trusted Advisor | コスト最適化Recommendation | グローバル |
-| Cost Anomaly Detection | 直近30日のコスト異常 | グローバル |
-| 調査Agent | 増加サービスの内訳、CloudTrail、リソース構成 | Cost Explorerは`us-east-1`、他はデプロイ先リージョン |
-| Amazon Bedrock | 収集結果の要約と優先順位付け | 設定したBedrockリージョン/推論プロファイル |
+| Cost Anomaly Detection | 直近30日のコスト異常とRoot Cause | グローバル |
+| 調査Agent | 増加サービスの内訳、CloudTrail変更履歴、リソース構成 | Cost Explorerは`us-east-1`、他はデプロイ先リージョン |
+| Amazon Bedrock | 収集結果の要約と優先順位付け | 設定したBedrockリージョン / 推論プロファイル |
+
+> [!NOTE]
+> Cost Explorer系のAPIは`us-east-1`にしか存在しないため、Lambdaを東京リージョンへ置いても呼び出し先は`us-east-1`になります。一方でCloudWatchとCompute Optimizerはリージョン単位のサービスなので、**デプロイ先の1リージョンしか見ていません**。
 
 ## 調査Agentの動き
 
-日次レポートの作成後、次の条件を満たすサービスだけを調査します。初期値は「直近7日が前の7日より **$100以上** かつ **20%以上** 増加」です。前期間が$0の新規サービスは、金額条件だけで対象になります。Taxは対象外です。
+日次レポートの集計後、条件を満たしたサービスだけを深掘りします。
+
+**起動条件**（[設定で変更可能](./configuration.md#調査agentとモデル)）
+
+- 直近7日が前の7日より **+$100以上** かつ **+20%以上** 増加
+- 前期間が$0の新規サービスは、金額条件のみで対象
+- Taxは対象外
+- 1回のレポートで調査するサービスは最大3件
+
+**処理**
 
 ```text
 定型コードで増加を検知
-  → 専用LambdaがSonnet 5のTool Useで必要な読み取りを選択
-  → 実装側が入力・対象サービス・回数を検証してAWS APIを実行
-  → Sonnet 5が観測事実 / 原因仮説 / 確信度を分けて要約
+  → 調査LambdaがBedrock Tool Useで「どの読み取りが必要か」を選択
+  → 実装側が入力・対象サービス・呼び出し回数を検証してからAWS APIを実行
+  → 観測事実 / 原因仮説 / 確信度 を分けて要約
+  → 結論はSlack通知の「原因の仮説（調査Agent）」に確信度付きで表示
 ```
 
-Agentに書き込み系のAPI、Slack Webhook、Secrets Manager権限はありません。日次通知Lambdaと調査LambdaのIAMロールは分離されています。Agentの結論はあくまで根拠付きの仮説であり、削除・停止・購入・設定変更を実行するものではありません。
+**使えるツール**（すべて読み取り専用）
+
+- Cost Explorerの Usage Type / Operation / Region 別内訳
+- CloudTrailの変更履歴（`LookupEvents`）
+- S3 / EC2 / RDS / Lambda の構成スナップショット
+
+> [!IMPORTANT]
+> 調査Agentに書き込み系API、Slack Webhook、Secrets Managerの権限はありません。日次レポートLambdaと調査LambdaのIAMロールは分離されています。
+> Agentの結論は**根拠付きの仮説**であり、削除・停止・購入・設定変更を実行するものではありません。
+
+「増加の検知」と「呼び出しの認可」はコードで固定し、「どの読み取り証拠を追加するか」と「根拠の要約」だけをモデルに委ねています。モデルのプロンプトを認可の根拠にしない、という切り分けです。
 
 ## 作成されるAWSリソース
 
-- AWS Lambda（Node.js 22、5分タイムアウト、同時実行数1）
-- 調査専用AWS Lambda（Node.js 22、3分タイムアウト、同時実行数1、Slack投稿権限なし）
-- Lambda実行ロールと読み取り中心のIAMポリシー
-- EventBridge Scheduler（日次実行）
-- SQS Dead Letter Queue（14日保持）
-- CloudWatch Logs Log Group（30日保持、スタック削除後も保持）
-- Cost Anomaly monitor（`createAnomalyMonitor=true`の場合）
-- `FinOpsBudgetAlertStack`をデプロイした場合: SNS Topic、Budget Alert Lambda、既存Budget通知へのSNS購読
+### `FinOpsFeedbackStack`
 
-Slack Webhook用Secretは既存Secretを参照するため、このスタックでは作成・削除しません。
+| リソース | 設定 |
+| --- | --- |
+| 日次レポートLambda | Node.js 22 / メモリ768MB / タイムアウト5分 / 同時実行数1 |
+| 調査Lambda | Node.js 22 / メモリ768MB / タイムアウト3分 / 同時実行数1 / Slack投稿権限なし |
+| Lambda実行ロール × 2 | 読み取り中心のIAMポリシー（[詳細](./security.md)） |
+| EventBridge Scheduler | 日次実行（`scheduleEnabled` で有効/無効） |
+| SQS Dead Letter Queue | Scheduler失敗イベントを14日保持 |
+| CloudWatch Logs Log Group × 2 | 30日保持 / スタック削除後も保持（`RETAIN`） |
+| Cost Anomaly monitor | `createAnomalyMonitor=true` の場合のみ |
 
-## 設計メモ: Claude Code SDKではなくBedrock Tool Useを使う理由
+### `FinOpsBudgetAlertStack`（任意）
 
-この実装は、スケジュールされた短時間の分析処理としてAmazon Bedrock Converse APIを直接呼び出します。日次要約には構造化出力、追加調査にはConverse Tool Useを使います。Lambdaの実行時間、IAM境界、構造化出力、デプロイサイズを管理しやすくするためです。
+| リソース | 設定 |
+| --- | --- |
+| SNS Topic | Budget通知の受け口 |
+| Budget Alert Lambda | Node.js 22 / タイムアウト30秒 |
+| 既存Budget通知へのSNS購読 | Custom Resourceで実績しきい値へ追加 |
+| 予測しきい値のSlack通知 | Custom Resourceで1件を管理 |
 
-「定型的な検知・認可」はコードで固定し、「どの読み取り証拠を追加するか」と「根拠の要約」はSonnetに委ねています。Claude Code SDKが提供するシェル、ファイル編集、広いツール実行環境は、この読み取り専用の定期ジョブには不要です。Slackから任意の質問を受け付ける対話型Agent、複数アカウント横断のMCP基盤、長い調査状態が必要になった段階で、Bedrock AgentCoreを検討してください。
+Slack Webhook用のSecretは**既存Secretを参照するだけ**なので、どちらのスタックも作成・削除しません。
+
+## 設計判断: なぜClaude Code SDKではなくBedrock Tool Useか
+
+この実装は、Amazon Bedrock Converse APIを直接呼び出します。日次要約には構造化出力、追加調査にはConverse Tool Useを使います。
+
+**理由**: Lambdaの実行時間、IAM境界、出力スキーマ、デプロイサイズをすべて明示的に管理したかったためです。Claude Code SDKが提供するシェル実行、ファイル編集、広いツール環境は、読み取り専用の定期ジョブには不要であり、IAM境界を曖昧にする方向に働きます。
+
+**将来的にAgentCoreを検討すべきタイミング**:
+
+- Slackから任意の質問を受け付ける対話型Agentにしたいとき
+- 複数アカウント横断のMCP基盤が必要になったとき
+- 長時間・状態を持つ調査セッションが必要になったとき
+</content>
