@@ -26,8 +26,8 @@ flowchart LR
 
 Slackへ通知が届く経路は2つあります。
 
-1. **日次レポート（スケジュール実行）** — EventBridge Scheduler → 日次レポートLambda → Slack
-2. **Budget即時通知（イベント駆動）** — AWS Budgets → SNS → Budget Alert Lambda → Slack（[`FinOpsBudgetAlertStack`](./setup.md#9-budgetしきい値をslackへ即時通知) をデプロイした場合のみ）
+1. 日次レポート（スケジュール実行）：EventBridge Scheduler → 日次レポートLambda → Slack
+2. Budget即時通知（イベント駆動）：AWS Budgets → SNS → Budget Alert Lambda → Slack（[`FinOpsBudgetAlertStack`](./setup.md#9-budgetしきい値をslackへ即時通知) をデプロイした場合のみ）
 
 ## 日次レポートの処理の流れ
 

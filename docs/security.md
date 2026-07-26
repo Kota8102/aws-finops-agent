@@ -8,9 +8,9 @@
 
 | ロール | 役割 | Slack Webhookの読み取り | Bedrock |
 | --- | --- | --- | --- |
-| **日次レポートLambda** | コスト・メトリクス・Recommendationの収集、調査Lambdaの呼び出し、Slack投稿 | ✅ | ✅ |
-| **調査Lambda** | 増加サービスの内訳・変更履歴・構成情報の読み取り | ❌ | ✅ |
-| **Budget Alert Lambda** | Budget SNSイベントをSlackへ中継 | ✅ | ❌ |
+| 日次レポートLambda | コスト・メトリクス・Recommendationの収集、調査Lambdaの呼び出し、Slack投稿 | あり | あり |
+| 調査Lambda | 増加サービスの内訳・変更履歴・構成情報の読み取り | なし | あり |
+| Budget Alert Lambda | Budget SNSイベントをSlackへ中継 | あり | なし |
 
 調査LambdaにSlack Secretの読み取り権限を与えていないのは、モデルが操作するコンポーネントから外部への出力経路を分離するためです。調査結果は日次レポートLambdaを経由してのみSlackへ届きます。
 
@@ -49,7 +49,7 @@
 | --- | --- |
 | Budget Alert Lambda | `secretsmanager:GetSecretValue`（Slack Webhook Secretのみ） |
 | SNS Topic | AWS BudgetsからのPublishを許可 |
-| Custom Resource | `budgets:ModifyBudget` — 既存BudgetへのSNS購読追加・削除に使用（AWS BudgetsのSubscriber APIはこの権限で認可されます） |
+| Custom Resource | `budgets:ModifyBudget`：既存BudgetへのSNS購読追加・削除に使用（AWS BudgetsのSubscriber APIはこの権限で認可されます） |
 
 > [!NOTE]
 > `budgets:ModifyBudget` は名前のとおり変更系ですが、用途は購読先（Subscriber）の追加・削除に限られます。AWS Budgetsのその他の変更操作と権限が共通であるためこの名前になっています。予算額・しきい値・メール通知先はこのスタックでは変更しません。

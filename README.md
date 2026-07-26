@@ -1,18 +1,16 @@
 # AWS FinOps Agent for Slack
 
-**AWSのコストを毎日ひとりで見張って、「何が変わったか」「次に何を確認すべきか」だけをSlackに届けるAgentです。**
+AWSのコストを毎日見張って、「何が変わったか」「次に何を確認すべきか」だけをSlackに届けるAgentです。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![AWS CDK](https://img.shields.io/badge/AWS%20CDK-v2-FF9900?logo=amazonaws&logoColor=white)](https://docs.aws.amazon.com/cdk/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
-Cost Explorerのダッシュボードを毎朝開く運用は続きません。このAgentは7つのAWSデータソースを横断して集計し、Amazon Bedrockで要約して、**1日1回・7ブロックのSlack通知**に落とし込みます。コストが大きく増えた日は、追加の調査Agentが読み取り専用で原因を深掘りします。
+Cost Explorerのダッシュボードを毎朝開く運用は続きません。このAgentは7つのAWSデータソースを横断して集計し、Amazon Bedrockで要約して、1日1回・7ブロックのSlack通知に落とし込みます。コストが大きく増えた日は、追加の調査Agentが読み取り専用で原因を深掘りします。
 
 > [!IMPORTANT]
-> このAgentはAWSリソースを**自動停止・削除・購入しません**。すべて読み取り専用です。通知される削減案は、必ず担当者が影響を検証してから実施してください。
-
----
+> このAgentはAWSリソースを自動停止・削除・購入しません。すべて読み取り専用です。通知される削減案は、必ず担当者が影響を検証してから実施してください。
 
 ## 通知イメージ
 
@@ -57,31 +55,31 @@ P0=今すぐ / P1=今週 / P2=計画
 
 | 判定 | 条件 |
 | --- | --- |
-| 🔴 **要対応** | P0アクションがある / Budgetの実績・予測が超過 / **対応が必要な**Cost Anomaly（進行中または終了から7日以内、かつ影響額$10以上）が1件以上 |
-| 🟡 **要確認** | P1アクションがある / 前7日比の絶対値が20%以上 / AI要約がフォールバック / 収集元にエラー |
-| 🟢 **正常** | 上記のいずれにも該当しない |
+| 🔴 要対応 | P0アクションがある / Budgetの実績・予測が超過 / 対応が必要なCost Anomaly（進行中または終了から7日以内、かつ影響額$10以上）が1件以上 |
+| 🟡 要確認 | P1アクションがある / 前7日比の絶対値が20%以上 / AI要約がフォールバック / 収集元にエラー |
+| 🟢 正常 | 上記のいずれにも該当しない |
 
-末尾の `証拠:` 行は、どのデータソースが取得できたか（`✓`）／未設定などで取得できなかったか（`–`）を、件数付きで示します。`異常` は対応が必要な件数と影響額で、しきい値未満の過去の異常は `0（過去2）` のように表示されます。略語の凡例は通知の最下部に毎回付きます。1つ落ちても通知は止まりません。
+末尾の `証拠:` 行は、どのデータソースが取得できたか（`✓`）、未設定などで取得できなかったか（`–`）を件数付きで示します。`異常` は対応が必要な件数と影響額で、しきい値未満の過去の異常は `0（過去2）` のように表示されます。略語の凡例は通知の最下部に毎回付きます。1つ落ちても通知は止まりません。
 
 ## できること
 
-### 📊 コストの可視化
+### コストの可視化
 
 直近7日とその前7日の比較、当月累計とCost Explorerの月末予測、変動が大きいサービス上位3件を並べます。日別の合計コストもAI分析へ渡すため、「いつから増えたか」に言及できます。
 
-### 💰 削減候補の収集
+### 削減候補の収集
 
 CloudWatch（低CPUのEC2/RDS）、Compute Optimizer、Trusted Advisor、Cost Optimization Hub（重複除外済みの月額削減見込み）を横断して集めます。
 
-### 🚨 アラートと異常検知
+### アラートと異常検知
 
-AWS Budgetsの実績・予測・しきい値超過は、日次レポートを待たず**即時**Slackへ。Cost Anomaly Detectionの異常と影響額も日次通知に含めます。
+AWS Budgetsの実績・予測・しきい値超過は、日次レポートを待たず即時Slackへ通知します。Cost Anomaly Detectionの異常と影響額も日次通知に含めます。
 
-### 🤖 AI要約と追加調査
+### AI要約と追加調査
 
-Bedrockが日本語の要点と優先アクション（P0/P1/P2）を生成します。さらに「前7日比 **+$100以上かつ+20%以上**」のサービスを検知すると、専用の調査Agentが Usage Type / Operation / Region 別の内訳、CloudTrailの変更履歴、リソース構成を読み取って原因仮説を立て、**確信度付きで通知の「原因の仮説」に表示します**。
+Bedrockが日本語の要点と優先アクション（P0/P1/P2）を生成します。さらに「前7日比 +$100以上かつ+20%以上」のサービスを検知すると、専用の調査Agentが Usage Type / Operation / Region 別の内訳、CloudTrailの変更履歴、リソース構成を読み取って原因仮説を立て、確信度付きで通知の「原因の仮説」に表示します。
 
-### 🛡 壊れにくい通知
+### 壊れにくい通知
 
 一部のAWS APIやAI分析が失敗しても、取得できた情報だけで通知を継続します。Agentが黙って止まることを避ける設計です。
 
@@ -89,18 +87,18 @@ Bedrockが日本語の要点と優先アクション（P0/P1/P2）を生成し�
 
 期待値を合わせるため、意図的に実装していない範囲を明示します。
 
-- **リソースの変更** — 停止・削除・リサイズ・Savings Plans購入は行いません（IAMにも変更権限を付与していません）
-- **Slackからの対話** — 通知は一方向です。質問応答・承認ワークフロー・自動修復はありません
-- **マルチアカウント横断の詳細分析** — Cost Explorerは請求アカウント全体を見ますが、CloudWatch / Compute Optimizerはデプロイ先の1リージョンのみです
-- **バケット/プレフィックス単位のS3課金分析** — 標準のCost Explorerでは特定できません。Storage LensまたはCUR（Cost and Usage Report）の併用が必要です
+- リソースの変更：停止・削除・リサイズ・Savings Plans購入は行いません（IAMにも変更権限を付与していません）
+- Slackからの対話：通知は一方向です。質問応答・承認ワークフロー・自動修復はありません
+- マルチアカウント横断の詳細分析：Cost Explorerは請求アカウント全体を見ますが、CloudWatch / Compute Optimizerはデプロイ先の1リージョンのみです
+- バケット/プレフィックス単位のS3課金分析：標準のCost Explorerでは特定できません。Storage LensまたはCUR（Cost and Usage Report）の併用が必要です
 
 詳しい制約は[運用ガイド](./docs/operations.md#既知の制約)にまとめています。
 
 ## クイックスタート
 
-所要時間は約15分（CDK bootstrap済みの場合）。ここでは最短経路だけを示します。前提条件・dry-run・Budget即時通知の接続を含む完全な手順は **[セットアップガイド](./docs/setup.md)** を参照してください。
+所要時間は約15分（CDK bootstrap済みの場合）。ここでは最短経路だけを示します。前提条件・dry-run・Budget即時通知の接続を含む完全な手順は[セットアップガイド](./docs/setup.md)を参照してください。
 
-**必要なもの**: Node.js 22+ / AWS CLI v2 / Cost Explorer有効化済みのAWSアカウント / Bedrockモデルへのアクセス / Slack Incoming Webhook
+必要なもの: Node.js 22+ / AWS CLI v2 / Cost Explorer有効化済みのAWSアカウント / Bedrockモデルへのアクセス / Slack Incoming Webhook
 
 ```bash
 # 1. 依存関係とAWS認証
@@ -130,7 +128,7 @@ npx cdk deploy \
 ```
 
 > [!TIP]
-> 手順3のあと、Slackへ投稿せずに動作を確かめる **dry-run** ができます。`{"dryRun":true}` でLambdaを直接呼ぶだけです → [セットアップガイド 手順6](./docs/setup.md#6-slackへ投稿しないdry-run)
+> 手順3のあと、Slackへ投稿せずに動作を確かめるdry-runができます。`{"dryRun":true}` でLambdaを直接呼ぶだけです。詳細は[セットアップガイド 手順6](./docs/setup.md#6-slackへ投稿しないdry-run)を参照してください。
 
 ## 構成
 
@@ -150,11 +148,11 @@ flowchart LR
 
 | ドキュメント | 読むタイミング |
 | --- | --- |
-| 📦 [セットアップガイド](./docs/setup.md) | **最初に読む。** 前提条件から9ステップの導入、dry-run、Budget即時通知、アンインストールまで |
-| 🏗 [アーキテクチャ](./docs/architecture.md) | 全体構成、データソース一覧、調査Agentの動作、作成されるAWSリソース、設計判断の背景 |
-| ⚙️ [設定リファレンス](./docs/configuration.md) | しきい値・モデル・スケジュールを変えたいとき。CDK context / 環境変数の全一覧 |
-| 🔐 [IAMとセキュリティ](./docs/security.md) | セキュリティレビュー時。ロール別の権限一覧と権限分離の方針 |
-| 🔧 [運用ガイド](./docs/operations.md) | **通知が来ない・数値がおかしいとき。** Agent自体のコスト、ログの見方、トラブルシューティング、既知の制約 |
+| [セットアップガイド](./docs/setup.md) | 最初に読む。前提条件から9ステップの導入、dry-run、Budget即時通知、アンインストールまで |
+| [アーキテクチャ](./docs/architecture.md) | 全体構成、データソース一覧、調査Agentの動作、作成されるAWSリソース、設計判断の背景 |
+| [設定リファレンス](./docs/configuration.md) | しきい値・モデル・スケジュールを変えたいとき。CDK context / 環境変数の全一覧 |
+| [IAMとセキュリティ](./docs/security.md) | セキュリティレビュー時。ロール別の権限一覧と権限分離の方針 |
+| [運用ガイド](./docs/operations.md) | 通知が来ない・数値がおかしいとき。Agent自体のコスト、ログの見方、トラブルシューティング、既知の制約 |
 
 ## 開発
 
@@ -190,13 +188,12 @@ npx cdk synth   # CloudFormationテンプレートの生成確認
 
 IssueやPull Requestを歓迎します。このプロジェクトには守りたい設計上の制約があるため、変更前に次を確認してください。
 
-1. **AWSリソースを変更する権限をLambdaへ追加しない** — このAgentが読み取り専用であることは中心的な設計方針です
-2. **新しいデータソースの失敗が通知全体を止めないようにする** — 収集は個別にフォールバックさせ、`collectorStatus` へ反映してください
-3. **Slack通知を7ブロック程度に保つ** — 情報を詰め込むほど読まれなくなります
-4. **`npm test` / `npm run build` / `npx cdk synth` が通ることを確認する**
-5. **アカウントID、リソースID、Webhook URL、実際のコストデータをコミットしない**
+1. AWSリソースを変更する権限をLambdaへ追加しない。読み取り専用であることは中心的な設計方針です
+2. 新しいデータソースの失敗が通知全体を止めないようにする。収集は個別にフォールバックさせ、`collectorStatus` へ反映してください
+3. Slack通知を7ブロック程度に保つ。情報を詰め込むほど読まれなくなります
+4. `npm test` / `npm run build` / `npx cdk synth` が通ることを確認する
+5. アカウントID、リソースID、Webhook URL、実際のコストデータをコミットしない
 
 ## ライセンス
 
 [MIT License](./LICENSE)
-</content>
