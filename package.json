@@ -2,6 +2,7 @@
   "name": "aws-finops-feedback",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Scheduled AWS cost analysis with generative feedback posted to Slack",
   "scripts": {
     "build": "tsc --noEmit",
